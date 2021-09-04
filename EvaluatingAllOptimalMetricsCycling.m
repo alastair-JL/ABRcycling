@@ -1,0 +1,253 @@
+% ModelIS   [ S, R_A^A,R_A^B,R_B^A,R_B^B,X ,R_AB]
+
+TList= linspace(1,100,250);
+
+Result=0*TList;
+mu=1/15; %(immgration/emigration rate)
+beta= [1,0.99,0.99,0.98]; %Infection rates;
+smallImport=0.001;
+
+mutationRate=0.1;
+
+importation= [0.5,smallImport,smallImport,smallImport*2,smallImport*2,1,0]';
+importation=  importation*mu/([1,1,0,1,0,1,1]*importation);
+
+g=1/10; %Ten day recovery without meds;
+q=1/2.5; %treated recovery.
+durgCorrection=0.01; %Rate at which incorrect drug use is replaced by correct drug use.
+
+tau= (q-g);
+
+MutantArrivalRates= zeros(length(TList),4);
+M_IMPORT=1;
+M_BASE=2;
+M_SELECT=3;
+M_HGT=4;
+
+X365=zeros(length(TList),4);
+X365_lowMutant=zeros(length(TList),4);
+DoesThisIntegrateToOne=zeros(length(TList),4);
+Expected_T_half=zeros(length(TList),4);
+X_T=zeros(length(TList),4);
+X_Tstar=zeros(length(TList),4);
+X_bar=zeros(length(TList),1);
+
+epsilon=10^-2.5;
+
+barXm=(g+mu)/beta(4)
+
+RhoObserved=zeros(length(TList),2);
+RhoPredicted=zeros(length(TList),2);
+
+for(ccc=1:length(TList))
+    
+    T=TList(ccc);
+    
+    chi= @(t) 1*(mod(t,2*T)>T);
+    
+filter= @(t) [1;chi(t);1-chi(t);chi(t);1-chi(t);1;1];
+
+importation= [0.5,smallImport,smallImport,smallImport*2,smallImport*2,1,0]';
+importation=  importation*mu/(filter(1)'*importation);
+
+b=0.5;
+betaMatrix= [beta(1),0,0,0,0,0,0;
+             0,beta(2),beta(2),0,0,0,0;
+             0,beta(2),beta(2),0,0,0,0;
+             0,0,0,beta(3),beta(3),0,0;
+             0,0,0,beta(3),beta(3),0,0;
+             -beta(1),-beta(2),-beta(2),-beta(3),-beta(3),0,-beta(4);
+             0,0,0,0,0,0,beta(4)];
+      
+correctionMatrix=zeros(7,7);         
+correctionMatrix(2,2)=-durgCorrection;
+correctionMatrix(3,2)=durgCorrection;
+correctionMatrix(5,5)=-durgCorrection;
+correctionMatrix(4,5)=durgCorrection;
+
+
+
+recovery= diag(-[q,g,q,q,g,0,g]);
+recovery(6,:)=[q,g,q,q,g,0,g];
+
+
+
+Deriv =@(t,V) [(filter(t).*importation + filter(t).*betaMatrix*V(1:7)*V(6) + (recovery+correctionMatrix)*V(1:7)-mu*V(1:7)); V(1:7) ];
+
+ y0=[ones(6,1)/6;zeros(8,1)];
+  
+warmupTime= ceil(1500/(2*T))*2*T;
+[tOut,yOut] = ode45(Deriv,[0,warmupTime],y0); %This is a very derp plan to get the equilibrium values. 
+                                            %There are FAR smarter plans avaliable. Oh well.
+ y0=[yOut(end,(1:6))';zeros(8,1)];
+
+ [tOut,yOut] = ode45(Deriv,[0,warmupTime],y0); %This is a very derp plan to get the equilibrium values. 
+
+yFinal=yOut(end,7+(1:7));
+
+RhoObserved(ccc,1)= yFinal(3)/(yFinal(2)+yFinal(3));
+RhoObserved(ccc,2)= yFinal(4)/(yFinal(4)+yFinal(5));
+%RhoPredicted(ccc,1)= ((mu+g)*chi + durgCorrection)/(tau*(1-chi)+mu+g+durgCorrection);
+%RhoPredicted(ccc,2)= ((mu+g)*(1-chi) + durgCorrection)/(tau*chi+mu+g+durgCorrection);
+
+MutantArrivalRates(ccc,M_IMPORT)=1;
+MutantArrivalRates(ccc,M_BASE)=sum(yFinal(2:5))/warmupTime;
+MutantArrivalRates(ccc,M_SELECT)=sum(yFinal(3:4))/warmupTime;
+MutantArrivalRates(ccc,M_HGT)=sum(yFinal(2:3))*sum(yFinal(4:5))/warmupTime;
+X_bar(ccc)=yFinal(6);
+
+yFinal(7)=epsilon;
+
+tIn= 365-fliplr([0,logspace(-9,0,2000)*365]);
+
+[tOut,yOut] = ode45(Deriv,tIn,[yFinal',zeros(7,1)]); %This is a very derp plan to get the equilibrium values. 
+
+LogRfinal=log(yOut(:,7));
+logRInitial= log(epsilon);
+
+PostArrivalIntegral= barXm*tOut +LogRfinal-logRInitial;
+%The behavior of the system post R_AB arrival can be found using the Log
+%forumal in the appendix.
+
+PreArrivalIntegral= (tOut(end)-tOut)*yFinal(6);
+%The integral prior to T_epsilon is just 
+
+TotalIntegral=PostArrivalIntegral+PreArrivalIntegral;
+
+
+for(mmm=1:size(MutantArrivalRates,2))
+M=MutantArrivalRates(ccc,mmm)
+PDF=  exp(-M*(tOut(end)-tOut))*M;
+%The probability density function of arrival times is exponential, with
+%decay rate proptional to M_i
+widths= [tOut(2)-tOut(1);tOut(3:end)-tOut((3:end)-2);tOut(end)-tOut(end-1)];
+
+if(M<=10^-7)
+   PDF(1:end)=0; 
+end
+X365(ccc,mmm)=  sum( widths.*TotalIntegral.*PDF )/2+ exp(-M*tOut(end))*yFinal(6)*365;
+  %Here we count all the probabilities for if T_eps<365, along with the
+  %alternative possibility that T_eps>365, in which case we use the
+  %pre-mutant equilibrium across the whole integral.
+ DoesThisIntegrateToOne(ccc,mmm)=sum( widths.*PDF )/2+ exp(-M*tOut(end));
+
+end
+  
+  
+for(mmm=1:size(MutantArrivalRates,2))
+M=MutantArrivalRates(ccc,mmm)*mutationRate;
+PDF=  exp(-M*(tOut(end)-tOut))*M;
+%The probability density function of arrival times is exponential, with
+%decay rate proptional to M_i
+widths= [tOut(2)-tOut(1);tOut(3:end)-tOut((3:end)-2);tOut(end)-tOut(end-1)];
+
+if(M<=10^-7)
+   PDF(1:end)=0; 
+end
+X365_lowMutant(ccc,mmm)=  sum( widths.*TotalIntegral.*PDF )/2+ exp(-M*tOut(end))*yFinal(6)*365;
+  %Here we count all the probabilities for if T_eps<365, along with the
+  
+end
+  
+  
+if(yFinal(6)<= barXm)
+    Expected_T_half(ccc,:)=inf;
+else
+    
+    Opt    = odeset('Events', @myEvent);
+    
+    warmupTime= 3650;
+    [tOut,yOut] = ode45(Deriv,[0,warmupTime],[yFinal',zeros(7,1)],Opt); %This is a very derp plan to get the equilibrium values. 
+    
+    if( (tOut(end)>=3640) || (yOut(end,7)<sum(yOut(end,1:5))) )
+        Expected_T_half(ccc,:)=inf;
+        X_T(ccc,:)=inf;
+    else
+        Expected_T_half(ccc,:)=tOut(end)+1./MutantArrivalRates(ccc,:);
+        X_T(ccc,:)=yOut(end,13)+yFinal(6)./MutantArrivalRates(ccc,:);
+    end
+    
+end
+
+X_Tstar(ccc,:)=  (yFinal(6)- barXm)./MutantArrivalRates(ccc,:);
+
+
+
+end
+
+figure()
+plot(TList,DoesThisIntegrateToOne)
+
+figure(11)
+plot(TList,RhoObserved);
+hold on
+plot(TList,RhoPredicted,':');
+xlabel('\chi_A')
+ylabel('\rho')
+
+figure(5)
+subplot(2,1,1)
+plot(TList,MutantArrivalRates)
+xlabel('\chi_A')
+ylabel('M')
+legend({'import','base','select','HGT'});
+
+subplot(2,1,2)
+plot(TList,X_bar)
+hold on
+plot(TList,0*X_bar+g/beta(4),'k:');
+xlabel('\chi_A')
+ylabel('\bar X')
+
+
+figure(7)
+subplot(3,2,1)
+plot(TList,X365,'lineWidth',1.5 )
+xlabel('\chi_A')
+ylabel('X_{365}')
+title('High mutation rate')
+
+subplot(3,2,2)
+plot(TList,X365_lowMutant,'lineWidth',1.5 )
+xlabel('\chi_A')
+ylabel('X_{365}')
+title('Low mutation rate')
+
+subplot(3,2,3)
+plot(TList,Expected_T_half,'lineWidth',1.5 )
+xlabel('\chi_A')
+ylabel('T_{1/2}')
+
+subplot(3,2,4)
+plot(TList,X_T,'lineWidth',1.5 )
+xlabel('\chi_A')
+ylabel('X_{T}')
+
+subplot(3,2,5)
+plot(TList,X_Tstar,'lineWidth',1.5 )
+xlabel('\chi_A')
+ylabel('X_{T*}')
+title('Raw Calculation')
+
+subplot(3,2,6)
+plot(TList,X_Tstar./max(X_Tstar),'lineWidth',1.5 )
+xlabel('\chi_A')
+ylabel('X_{T*}')
+legend({'import','base','select','HGT'});
+title('Rescaled')
+ylim([-0.1,1.1])
+
+
+
+figure(15)
+plot(TList,MutantArrivalRates(1,:)./MutantArrivalRates)
+xlabel('T')
+ylabel('Mutant Arrival Time')
+legend({'import','base','select','HGT'});
+
+
+function [value, isterminal, direction] = myEvent(T, Y)
+value      =  (sum(Y(1:5))-Y(7))*(Y(7)- 10^-3);
+isterminal = 1;   % Stop the integration
+direction  = 0;
+end
